@@ -1,0 +1,39 @@
+violent crime involving a weapon
+assault with a weapon
+battery with a weapon
+armed assault
+armed battery
+aggravated assault with a weapon
+aggravated battery with a weapon
+breaking and entering with a weapon
+armed burglary
+burglary with a weapon
+sexual assault
+attempted sexual assault
+rape
+sexual abuse
+child molestation
+sexual offense
+sex crime
+any sexual related crime
+child pornography
+non-consensual sexual act
+involuntary sexual act
+murder
+attempted murder
+vehicular manslaughter
+involuntary manslaughter
+voluntary manslaughter
+homicide
+drug distribution
+drug trafficking
+selling drugs
+transporting drugs
+delivering drugs
+delivery of controlled substance
+cultivating drugs
+cultivation of controlled substance
+manufacturing drugs
+intent to distribute controlled substance
+intent to sell illegal drugs
+human trafficking

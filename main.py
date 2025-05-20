@@ -1,7 +1,7 @@
 from flask import Flask, request, render_template, jsonify
 import os
 from datetime import datetime, timedelta
-import re # For parsing the category from LLM output and weapon keywords
+import re # For parsing the category from LLM output, weapon keywords, and date extraction
 import google.generativeai as genai
 import time
 import calendar # Needed for finding the last day of the month
@@ -35,175 +35,216 @@ NO_GO_CATEGORIES = [
 ]
 
 # --- Define Critical Keywords for Input Scan (Safety Net) ---
-# These keywords in the *original input* might trigger a denial even if LLM says "Other".
-# Be careful not to make these too broad.
 CRITICAL_INPUT_KEYWORDS = {
-    # Category: Keywords
-    "Violent Crime Involving a Weapon": ["armed", "weapon", "firearm", "gun", "knife", "stabbing", "shooting"],
+    "Violent Crime Involving a Weapon": ["armed", "weapon", "firearm", "gun", "knife", "stabbing", "shooting", "missile", "explosive", "bomb", "shovel"], # Added shovel
     "Sexual Related Crime": ["sexual assault", "rape", "molestation", "child pornography", "non-consensual sex", "involuntary sex"],
     "Murder or Manslaughter": ["murder", "manslaughter", "homicide"],
     "Distribution Drug Related Crime": ["sell drugs", "distribute drugs", "manufacture drugs", "transport drugs", "traffic drugs", "deliver drugs", "cultivate drugs", "intent to distribute", "intent to sell"],
-    "Human Trafficking": ["human trafficking", "forced labor", "sexual exploitation trafficking"]
-    # Add "assault", "battery" here ONLY if *any* felony assault/battery (even without weapon) is a No Go.
-    # If simple assault/battery is okay, leave them out of this specific list.
-    # "Violent Crime Without Weapon": ["assault", "battery"] # Example if simple assault is also No Go
+    "Human Trafficking": [
+        "human trafficking", "trafficking of persons", "trafficking a person", "trafficking an individual",
+        "forced labor", "involuntary servitude", "debt bondage", "compelled service",
+        "sexual exploitation trafficking", "sex trafficking", "commercial sexual exploitation of a minor",
+        "exploiting a person for labor", "exploiting an individual for sex", "coercing a person into labor", "coercing a person into prostitution",
+        "transporting persons for exploitation", "harboring persons for exploitation",
+        "recruiting persons for exploitation", "child trafficking", "minor trafficking", "trafficking of children",
+        "person for prostitution", "individual for prostitution", "child for prostitution",
+        "person smuggling", "people smuggling", "smuggling persons", "smuggling people", 
+        "smuggling individuals", "smuggling children", "smuggling minors", "alien smuggling"
+    ]
 }
-
 
 # --- Weapon Keyword Detection ---
 WEAPON_KEYWORDS = [
-    "weapon", "gun", "firearm", "handgun", "shotgun", "rifle", "pistol",
-    "knife", "dagger", "blade", "stabbing", "slashing",
-    "armed", "explosive", "bomb", "grenade", "brass knuckles",
-    "club", "bat", "blunt object", "crowbar", "tire iron", "deadly weapon",
-    "assault rifle", "machine gun", "shooter", "shooting"
+    # Traditional weapons
+    "weapon", "gun", "firearm", "handgun", "shotgun", "rifle", "pistol", "revolver",
+    "knife", "dagger", "blade", "stabbing", "slashing", "sword", "machete", "axe", "hatchet",
+    "armed", "explosive", "bomb", "grenade", "missile", "detonator",
+    # Improvised / Less common but still weapons / items used as weapons
+    "brass knuckles", "knuckles", "club", "bat", "baseball bat", "blunt object", "crowbar", 
+    "tire iron", "pipe", "metal pipe", "stick", "heavy stick", "rock", "brick", "heavy object", "bottle", "glass bottle",
+    "shovel", # Added shovel
+    "deadly weapon", "dangerous instrument", "improvised weapon",
+    # Actions strongly implying weapons
+    "assault rifle", "machine gun", "shooter", "shooting", "shot", "fired a"
+]
+
+# --- Violence Keywords (for distinguishing possession from violent use) ---
+VIOLENCE_KEYWORDS = [
+    "assault", "battery", "attack", "fight", "robbery", "threaten", "menace", "brandish", "beat", "beating", # Added beat, beating
+    "injure", "harm", "homicide", "murder", "manslaughter", "violent", "struck", "stabbed", "shot at"
 ]
 
 def text_mentions_weapon(description):
-    """
-    Scans the description text for weapon-related keywords.
-    """
-    if not description:
-        return False
+    if not description: return False
     description_lower = description.lower()
     for keyword in WEAPON_KEYWORDS:
-        if keyword in ["armed", "bat", "gun", "knife", "club"]:
-            if re.search(r'\b' + re.escape(keyword) + r'\b', description_lower):
-                return True
-        elif keyword in description_lower:
+        # Use word boundaries for shorter/common words to avoid false positives
+        if keyword in ["armed", "bat", "gun", "knife", "club", "rock", "stick", "pipe", "shot", "shovel"]: 
+            if re.search(r'\b' + re.escape(keyword) + r'\b', description_lower): return True
+        elif keyword in description_lower: return True
+    return False
+
+def text_mentions_violence(description):
+    """Checks if the description contains keywords indicative of a violent act."""
+    if not description: return False
+    description_lower = description.lower()
+    for keyword in VIOLENCE_KEYWORDS:
+        if re.search(r'\b' + re.escape(keyword) + r'\b', description_lower):
             return True
     return False
 
-# --- Flexible Date Parsing Helper ---
+# --- Super Flexible Date Parsing Helper ---
 def parse_flexible_date(date_str):
-    """
-    Attempts to parse a date string in YYYY-MM-DD, YYYY-MM, or YYYY formats.
-    """
     date_str = date_str.strip()
-    try:
-        return datetime.strptime(date_str, '%Y-%m-%d')
-    except ValueError:
+    month_replacements = {
+        r'\bjanuary\b': 'Jan', r'\bfebruary\b': 'Feb', r'\bmarch\b': 'Mar',
+        r'\bapril\b': 'Apr', r'\bmay\b': 'May', r'\bjune\b': 'Jun',
+        r'\bjuly\b': 'Jul', r'\baugust\b': 'Aug', r'\bseptember\b': 'Sep',
+        r'\boctober\b': 'Oct', r'\bnovember\b': 'Nov', r'\bdecember\b': 'Dec',
+        r'\bjan\b': 'Jan', r'\bfeb\b': 'Feb', r'\bmar\b': 'Mar',
+        r'\bapr\b': 'Apr', r'\bjun\b': 'Jun',
+        r'\bjul\b': 'Jul', r'\baug\b': 'Aug', r'\bsep(t)?\b': 'Sep',
+        r'\boct\b': 'Oct', r'\bnov\b': 'Nov', r'\bdec\b': 'Dec'
+    }
+    temp_date_str = date_str.lower()
+    for pattern, replacement in month_replacements.items():
+        temp_date_str = re.sub(pattern, replacement, temp_date_str)
+
+    formats_to_try = [
+        ('%Y-%m-%d', False), ('%m/%d/%Y', False), ('%m-%d-%Y', False),
+        ('%b %Y', True), ('%B %Y', True), ('%b, %Y', True), ('%B, %Y', True),
+        ('%Y-%m', True), ('%m/%Y', True), ('%m-%Y', True), ('%Y', True)
+    ]
+    for fmt, is_partial in formats_to_try:
         try:
-            dt = datetime.strptime(date_str, '%Y-%m')
-            last_day = calendar.monthrange(dt.year, dt.month)[1]
-            return dt.replace(day=last_day)
-        except ValueError:
-            try:
-                dt = datetime.strptime(date_str, '%Y')
-                return dt.replace(month=12, day=31)
-            except ValueError:
-                return None
+            string_to_parse = temp_date_str if '%b' in fmt.lower() or '%B' in fmt.lower() else date_str
+            dt = datetime.strptime(string_to_parse, fmt)
+            if is_partial:
+                if fmt in ['%Y-%m', '%m/%Y', '%m-%Y', '%b %Y', '%B %Y', '%b, %Y', '%B, %Y']: 
+                    last_day = calendar.monthrange(dt.year, dt.month)[1]
+                    return dt.replace(day=last_day)
+                elif fmt == '%Y': return dt.replace(month=12, day=31)
+            return dt 
+        except ValueError: continue 
+    return None 
 
-# --- LLM Interaction with Categorization ---
-# (query_gemini_and_categorize function remains the same as the previous version)
-def query_gemini_and_categorize(felony_description, weapon_checked_by_user=None, weapon_found_in_text=False, max_retries=3, retry_delay=5):
-    """
-    Queries Google Gemini to get a legal summary and explicit categorization of a felony.
-    """
-    if not GOOGLE_API_KEY:
-        return "Error", "", "Google API key not configured."
-    if not gemini_model:
-        return "Error", "", "Gemini model not initialized."
+# --- Date Extraction from Text ---
+def extract_dates_from_text(text_content):
+    if not text_content: return []
+    found_date_strings = []
+    date_patterns = [
+        r'\b(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})\b', 
+        r'\b(\d{1,2}[-/.]\d{1,2}[-/.]\d{4})\b', 
+        r'\b((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?(?:,)?\s+\d{4})\b',
+        r'\b(\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4})\b',
+        r'\b(\d{4}[-/]\d{1,2})\b',           
+        r'\b(\d{1,2}[/-]\d{4})\b',           
+        r'\b((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4})\b',
+        r'\b([12]\d{3})\b'                   
+    ]
+    temp_text = text_content
+    def replace_and_collect(match_obj, collection):
+        collection.append(match_obj.group(0)); return " " * len(match_obj.group(0))
+    for pattern in date_patterns:
+        flags = re.IGNORECASE if "jan" in pattern.lower() else 0
+        temp_text = re.sub(pattern, lambda m: replace_and_collect(m, found_date_strings), temp_text, flags=flags)
+    return list(set(found_date_strings))
 
+# --- LLM Interaction with Multi-Offense Categorization ---
+def query_gemini_for_offense_analysis(felony_description, weapon_checked_by_user=None, weapon_found_in_text=False, max_retries=3, retry_delay=5):
+    if not GOOGLE_API_KEY: return ["Error"], "", "Google API key not configured."
+    if not gemini_model: return ["Error"], "", "Gemini model not initialized."
     category_list_for_prompt = "\n".join([f"- {cat}" for cat in NO_GO_CATEGORIES])
-
     weapon_guidance_parts = []
-    if weapon_checked_by_user is True:
-        weapon_guidance_parts.append("User checkbox indicates a weapon WAS involved.")
-    elif weapon_checked_by_user is False:
-        weapon_guidance_parts.append("User checkbox indicates a weapon was NOT involved.")
-    else:
-        weapon_guidance_parts.append("User did not specify weapon involvement via checkbox.")
+    if weapon_checked_by_user is True: weapon_guidance_parts.append("User checkbox indicates a weapon WAS involved.")
+    elif weapon_checked_by_user is False: weapon_guidance_parts.append("User checkbox indicates a weapon was NOT involved.")
+    else: weapon_guidance_parts.append("User did not specify weapon involvement via checkbox.")
+    if weapon_found_in_text: weapon_guidance_parts.append("Text analysis of the description suggests a weapon was mentioned.")
+    else: weapon_guidance_parts.append("Text analysis of the description did not find common weapon keywords.")
 
-    if weapon_found_in_text:
-        weapon_guidance_parts.append("Text analysis of the description suggests a weapon was mentioned.")
-    else:
-        weapon_guidance_parts.append("Text analysis of the description did not find common weapon keywords.")
-
+    weapon_guidance_parts.append('Note: A "weapon" can include traditional arms as well as any object used to inflict or threaten serious harm (e.g., a stick, rock, heavy object, bottle, vehicle used intentionally to harm, shovel) if the context implies its use as such in a violent crime.') # Added shovel to example
     combined_weapon_guidance = " ".join(weapon_guidance_parts)
 
     prompt = f"""
-You are a legal assistant. Analyze the following felony description.
-Your primary task is to categorize the offense based *only* on the information explicitly provided in the description. Do not infer additional charges or circumstances not stated.
+You are a legal assistant. Analyze the following felony description, which may describe one or more distinct offenses.
+Your primary task is to identify each distinct potential felony mentioned and categorize each one based *only* on the information explicitly provided in the description. Do not infer additional charges or circumstances not stated.
 
-Guidance on Weapon Involvement:
+Guidance on Weapon Involvement (applies to each offense if relevant):
 {combined_weapon_guidance}
 
 Instructions:
-1.  First, determine the most fitting category for the described offense from the list below.
-    Consider both the felony description and the 'Guidance on Weapon Involvement' provided above.
-    - If the overall evidence (description, checkbox, text scan) strongly suggests a violent crime AND a weapon, "Violent Crime Involving a Weapon" is a strong candidate.
-    - If the overall evidence strongly suggests NO weapon was involved (e.g., checkbox says no AND text scan is negative, OR description is explicit), DO NOT use "Violent Crime Involving a Weapon". In such cases, if the act is still a prohibited category (e.g. Murder), choose that. Otherwise, choose "Other".
-    - For drug-related offenses:
-        - If the description explicitly mentions selling, transporting, delivering, cultivating, manufacturing, trafficking, or intent to distribute/sell, categorize it as "Distribution Drug Related Crime".
-        - If the description *only* mentions possession of drugs, even if a felony, categorize it as "Other" UNLESS it also clearly falls into another prohibited category from the list. Do not infer distribution from possession alone.
-    If it fits multiple categories from the list, choose the most severe or prominent one that accurately reflects all provided information.
-    If it does not clearly fit any of these specific categories from the list, categorize it as "Other".
-    Output this category on a single, separate line formatted EXACTLY as:
-    Primary Category: [Chosen Category Name or Other]
+1.  Read the entire "Felony Description to analyze".
+2.  Identify each distinct potential felony described.
+3.  For EACH distinct offense identified, assign it the most fitting category from the "Categories to choose from" list below.
+    - Consider the weapon guidance for each offense. Remember the broad definition of a weapon if used to cause harm.
+    - For "Violent Crime Involving a Weapon": The description must indicate BOTH a violent act (e.g., assault, battery, robbery, threat with a weapon, beating) AND the involvement of a weapon (including improvised items like a shovel, stick, rock, used to harm) in that specific violent act. Mere possession of a weapon, even if a felony, without a described violent act using it, should be categorized as "Other" unless it fits another prohibited category.
+    - For drug-related offenses: If it's only possession, categorize as "Other". If it's selling, manufacturing, trafficking, etc., use "Distribution Drug Related Crime".
+    - For "Human Trafficking": Consider descriptions involving the recruitment, transportation, harboring, or receipt of persons (adults, children, individuals) through force, fraud, or coercion for the purpose of exploitation (like forced labor or sexual exploitation), OR descriptions involving the illegal smuggling of persons (e.g., "person smuggling," "alien smuggling"), even if terms like "accidental" are used by the input, if the act of smuggling itself is a felony.
+    - If an offense doesn't fit a specific prohibited category, assign "Other".
+4.  Format your output for the categories by listing each identified offense and its category. Start each category on a new line, prefixed with "Identified Category: ".
+    Example of format for multiple offenses:
+    Identified Category: [Category for first offense or Other]
+    Identified Category: [Category for second offense or Other]
+    (If only one offense, list one "Identified Category:" line. If no specific offenses classifiable into the list are found, output one line: "Identified Category: Other")
 
-2.  After the "Primary Category:" line, provide a concise legal explanation of the alleged crime under U.S. law. Focus on the key elements. Do not make assumptions about guilt or innocence.
+5.  After listing all "Identified Category:" lines, provide a single, concise overall legal explanation of the alleged crimes under U.S. law.
 
 Categories to choose from:
 {category_list_for_prompt}
 - Other
-
 Felony Description to analyze: "{felony_description}"
     """
-
-    generation_config = genai.types.GenerationConfig(
-        temperature=0.15,
-        max_output_tokens=750
-    )
-
+    generation_config = genai.types.GenerationConfig(temperature=0.15, max_output_tokens=1000)
     llm_full_output = ""
     for attempt in range(max_retries):
         try:
-            response = gemini_model.generate_content(
-                prompt,
-                generation_config=generation_config
-            )
-
+            response = gemini_model.generate_content(prompt, generation_config=generation_config)
             if response.parts:
                 llm_full_output = response.text.strip()
-                category_match = re.search(r"Primary Category:\s*(.+)", llm_full_output, re.IGNORECASE)
-                if category_match:
-                    parsed_category = category_match.group(1).strip()
-                    for known_cat in NO_GO_CATEGORIES:
-                        if known_cat.lower() == parsed_category.lower():
-                            return known_cat, llm_full_output, None
-                    if parsed_category.lower() == "other":
-                         return "Other", llm_full_output, None
-                    print(f"Warning: LLM returned category '{parsed_category}' not in predefined list or 'Other'. Treating as 'Other'. Full output: {llm_full_output[:200]}")
-                    return "Other", llm_full_output, None
-                else:
-                    error_msg = "Error: LLM did not provide category in expected format."
+                identified_categories = re.findall(r"Identified Category:\s*(.+)", llm_full_output, re.IGNORECASE)
+                if not identified_categories and ("Identified Category: Other" in llm_full_output or "Primary Category: Other" in llm_full_output):
+                     return ["Other"], llm_full_output, None 
+                normalized_categories = []
+                if identified_categories:
+                    for cat_str in identified_categories:
+                        cat_str_clean = cat_str.strip()
+                        found_known = False
+                        for known_cat in NO_GO_CATEGORIES:
+                            if known_cat.lower() == cat_str_clean.lower():
+                                normalized_categories.append(known_cat); found_known = True; break
+                        if not found_known and cat_str_clean.lower() == "other": normalized_categories.append("Other")
+                        elif not found_known:
+                            print(f"Warning: LLM returned category '{cat_str_clean}' not in predefined list or 'Other'. Treating as 'Other'.")
+                            normalized_categories.append("Other")
+                    return normalized_categories if normalized_categories else ["Other"], llm_full_output, None 
+                else: 
+                    primary_category_match = re.search(r"Primary Category:\s*(.+)", llm_full_output, re.IGNORECASE) 
+                    if primary_category_match:
+                        parsed_category = primary_category_match.group(1).strip()
+                        for known_cat in NO_GO_CATEGORIES:
+                            if known_cat.lower() == parsed_category.lower(): return [known_cat], llm_full_output, None
+                        if parsed_category.lower() == "other": return ["Other"], llm_full_output, None
+                        print(f"Warning: LLM used old 'Primary Category' format. Category '{parsed_category}' not in predefined list or 'Other'. Treating as ['Other'].")
+                        return ["Other"], llm_full_output, None
+                    error_msg = "Error: LLM did not provide categories in the expected 'Identified Category:' format."
                     print(f"Gemini API attempt {attempt + 1}: {error_msg} Full output: {llm_full_output[:500]}")
-                    if attempt < max_retries - 1:
-                        time.sleep(retry_delay)
-                        continue
-                    return "Error", llm_full_output, error_msg
-            else: # No parts in response
+                    if attempt < max_retries - 1: time.sleep(retry_delay); continue
+                    return ["Error"], llm_full_output, error_msg
+            else: 
                 error_details = []
-                if response.prompt_feedback and response.prompt_feedback.block_reason:
-                    error_details.append(f"Prompt blocked due to: {response.prompt_feedback.block_reason.name}")
+                if response.prompt_feedback and response.prompt_feedback.block_reason: error_details.append(f"Prompt blocked due to: {response.prompt_feedback.block_reason.name}")
                 if response.candidates:
                     for cand in response.candidates:
-                        if cand.finish_reason and cand.finish_reason.name != 'STOP':
-                            error_details.append(f"Generation finished due to: {cand.finish_reason.name}")
+                        if cand.finish_reason and cand.finish_reason.name != 'STOP': error_details.append(f"Generation finished due to: {cand.finish_reason.name}")
                         if cand.safety_ratings:
                             problematic_ratings = [(r.category.name, r.probability.name) for r in cand.safety_ratings if r.probability.name not in ['NEGLIGIBLE', 'LOW']]
                             if problematic_ratings: error_details.append(f"Safety Ratings Issues: {problematic_ratings}")
                 error_msg = "Error: No content generated by LLM."
                 if error_details: error_msg += " Details: " + "; ".join(error_details)
                 print(f"Gemini API attempt {attempt + 1} returned no valid content: {error_msg}")
-                if any(block_reason in error_msg.upper() for block_reason in ["SAFETY", "BLOCK_REASON_OTHER"]):
-                    return "Error", "", error_msg
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                    continue
-                return "Error", "", error_msg
-
+                if any(block_reason in error_msg.upper() for block_reason in ["SAFETY", "BLOCK_REASON_OTHER"]): return ["Error"], "", error_msg 
+                if attempt < max_retries - 1: time.sleep(retry_delay); continue
+                return ["Error"], "", error_msg
         except Exception as e:
             if "429" in str(e) and "quota" in str(e).lower():
                 print(f"Quota exceeded on attempt {attempt + 1}/{max_retries}: {e}")
@@ -211,264 +252,242 @@ Felony Description to analyze: "{felony_description}"
                     match_retry = re.search(r"retry_delay\s*\{\s*seconds\s*:\s*(\d+)\s*\}", str(e))
                     dynamic_retry_delay = int(match_retry.group(1)) if match_retry else retry_delay + (attempt * 5)
                     print(f"Retrying in {dynamic_retry_delay} seconds...")
-                    time.sleep(dynamic_retry_delay)
-                    continue
-                else:
-                    return "Error", "", f"LLM Quota Error after {max_retries} attempts: {e}"
+                    time.sleep(dynamic_retry_delay); continue
+                else: return ["Error"], "", f"LLM Quota Error after {max_retries} attempts: {e}"
             print(f"General error querying Gemini (attempt {attempt + 1}/{max_retries}): {type(e).__name__} - {e}")
-            if "API key not valid" in str(e) or "PERMISSION_DENIED" in str(e):
-                return "Error", "", f"LLM Auth/Permission Error: {e}"
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-            else:
-                return "Error", "", f"LLM Error after {max_retries} attempts: {e}"
-    return "Error", llm_full_output, "Max retries exceeded for LLM API request."
+            if "API key not valid" in str(e) or "PERMISSION_DENIED" in str(e): return ["Error"], "", f"LLM Auth/Permission Error: {e}"
+            if attempt < max_retries - 1: time.sleep(retry_delay); continue
+            else: return ["Error"], "", f"LLM Error after {max_retries} attempts: {e}"
+    return ["Error"], llm_full_output, "Max retries exceeded for LLM API request."
 
 
 # --- Policy Violation Check ---
-def check_policy_violation(llm_category, felony_dates_str_list=None, release_date_str=None):
-    """
-    Checks LLM category and dates. Returns (is_approved, reason).
-    """
-    # Check 1: LLM Category
-    if llm_category in NO_GO_CATEGORIES:
-        return False, f"Denied based on LLM category: '{llm_category}'"
-    if llm_category == "Error":
+def check_policy_violation(list_of_llm_categories, felony_dates_str_list=None, release_date_str=None):
+    if not list_of_llm_categories or "Error" in list_of_llm_categories:
         return False, "Denied due to error in LLM processing or categorization."
-
-    # Check 2: Date-related checks
-    error_message = "Invalid date format. Please use YYYY-MM-DD, YYYY-MM, or YYYY."
+    denied_categories_found = []
+    for category in list_of_llm_categories:
+        if category in NO_GO_CATEGORIES: denied_categories_found.append(category)
+    if denied_categories_found: return False, f"Denied based on LLM category: '{denied_categories_found[0]}'" 
+    valid_categories_identified_by_llm = [cat for cat in list_of_llm_categories if cat != "Error"]
+    if len(valid_categories_identified_by_llm) >= 2:
+        return False, "Denied: Description details two or more distinct felony types."
+    error_message = "Invalid date format. Please use foundry-MM-DD, foundry-MM, foundry, MM/DD/YYYY, or MM/YYYY (and - variations)."
     felony_datetimes = []
     if felony_dates_str_list:
         for date_str in felony_dates_str_list:
             parsed_date = parse_flexible_date(date_str)
-            if parsed_date:
-                felony_datetimes.append(parsed_date)
-            elif date_str:
-                return False, f"{error_message} (Offending value: '{date_str}')"
-
+            if parsed_date: felony_datetimes.append(parsed_date)
+            elif date_str: return False, f"{error_message} (Offending value: '{date_str}')"
     today = datetime.today()
-
-    # Rule: Felony within a year
     if felony_datetimes:
         for date_obj in felony_datetimes:
-            if today - date_obj <= timedelta(days=365):
-                return False, "Denied: Felony conviction within the last year."
-
-    # Rule: Released from Jail within a year
+            if date_obj > (today - timedelta(days=365)): return False, "Denied: Felony conviction within the last year."
     release_date = None
     if release_date_str and release_date_str.strip():
         release_date = parse_flexible_date(release_date_str)
-        if not release_date:
-            return False, f"{error_message} (Offending value: '{release_date_str}')"
-        if today - release_date <= timedelta(days=365):
-            return False, "Denied: Released from jail within the last year."
-
-    # Rule: 2 or more felonies unless the most recent felony is more than 10 years old.
+        if not release_date: return False, f"{error_message} (Offending value: '{release_date_str}')"
+        if release_date > (today - timedelta(days=365)): return False, "Denied: Released from jail within the last year."
     if felony_datetimes and len(felony_datetimes) >= 2:
         most_recent_felony_date = max(felony_datetimes)
-        if (today - most_recent_felony_date).days <= (10 * 365.25):
-            return False, "Denied: Two or more felony convictions, and the most recent is within the last 10 years."
-
-    return True, "Approved: No policy violations based on LLM category and date checks."
-
+        if most_recent_felony_date > (today - timedelta(days=10 * 365.25)):
+            return False, "Denied: Two or more felony convictions (based on dates provided), and the most recent is within the last 10 years."
+    return True, "Approved: No policy violations based on LLM category(s) and date checks."
 
 # --- Helper for Critical Keyword Check ---
 def check_input_for_critical_keywords(felony_input):
-    """
-    Scans the original input for critical keywords associated with No Go categories.
-    Returns the category name if a keyword is found, otherwise None.
-    """
-    if not felony_input:
-        return None
+    if not felony_input: return None
     input_lower = felony_input.lower()
+    found_critical_categories = set()
     for category, keywords in CRITICAL_INPUT_KEYWORDS.items():
         for keyword in keywords:
-            # Use word boundary for potentially ambiguous keywords
-            if keyword in ["armed", "gun", "knife", "bat", "club", "murder"]:
+            if keyword in ["armed", "gun", "knife", "bat", "club", "murder", "missile", "explosive", "bomb", "rape", "sex", "labor", "persons", "child", "minor", "smuggling", "shovel"]: # Added shovel
                  if re.search(r'\b' + re.escape(keyword) + r'\b', input_lower):
-                    return category # Return the category name
-            elif keyword in input_lower:
-                return category # Return the category name
-    return None
-
+                    found_critical_categories.add(category); break 
+            elif keyword in input_lower: 
+                found_critical_categories.add(category); break 
+    return list(found_critical_categories) if found_critical_categories else []
 
 # --- Flask Routes ---
 @app.route('/', methods=['GET', 'POST'])
-def index_route():
-    result_status = None
-    reason_message = ""
-    llm_full_text = ""
-    llm_assigned_category = ""
-    weapon_involved_checked_on_form = False
-    weapon_detected_in_text_on_form = False
-    final_decision_cat_display = "" # For displaying the category used in final decision
+def index_route(): 
+    result_status, reason_message, llm_full_text = None, "", ""
+    llm_assigned_categories_display = [] 
+    weapon_involved_checked_on_form, weapon_detected_in_text_on_form = False, False
+    final_decision_cats_display, dates_extracted_from_text_display = [], []
 
     if request.method == 'POST':
-        felony_input = request.form.get('felony', '')
-        felony_dates_input = request.form.get('felony_dates', '')
+        felony_input = request.form.get('felony', '') 
+        felony_dates_from_box_str = request.form.get('felony_dates', '')
         release_date_input = request.form.get('release_date', '')
-
         weapon_checkbox_val = request.form.get('weapon_involved')
         weapon_checked_by_user = True if weapon_checkbox_val == 'on' else False
-        weapon_involved_checked_on_form = weapon_checked_by_user
-
+        weapon_involved_checked_on_form = weapon_checked_by_user 
         weapon_found_in_text = text_mentions_weapon(felony_input)
-        weapon_detected_in_text_on_form = weapon_found_in_text
+        weapon_detected_in_text_on_form = weapon_found_in_text 
 
-        felony_dates_str_list = []
-        if felony_dates_input:
-            felony_dates_str_list = [date.strip() for date in felony_dates_input.split(',') if date.strip()]
+        dates_extracted_from_text = extract_dates_from_text(felony_input)
+        dates_extracted_from_text_display = dates_extracted_from_text 
+
+        felony_dates_from_box_list = []
+        if felony_dates_from_box_str:
+            felony_dates_from_box_list = [date.strip() for date in felony_dates_from_box_str.split(',') if date.strip()]
+
+        all_felony_dates_str_list = list(set(felony_dates_from_box_list + dates_extracted_from_text))
+        print(f"Dates from box: {felony_dates_from_box_list}, Dates from text: {dates_extracted_from_text}, Combined: {all_felony_dates_str_list}")
 
         if not felony_input:
-            result_status = "Error"
-            reason_message = "Felony description cannot be empty."
+            result_status, reason_message = "Error", "Felony description cannot be empty."
         else:
-            category, full_output, error_msg_from_llm = query_gemini_and_categorize(
-                felony_input,
+            list_of_llm_categories, full_output, error_msg_from_llm = query_gemini_for_offense_analysis(
+                felony_input, 
                 weapon_checked_by_user=weapon_checked_by_user,
                 weapon_found_in_text=weapon_found_in_text
             )
             llm_full_text = full_output
-            llm_assigned_category = category # Store the original LLM category
+            llm_assigned_categories_display = list_of_llm_categories 
 
-            final_decision_category = category # Start with LLM's decision
+            final_decision_categories = list(list_of_llm_categories) 
 
-            # Apply Overrides
-            if category == "Violent Crime Involving a Weapon" and not weapon_checked_by_user and not weapon_found_in_text:
-                print(f"Overriding LLM category. Original: {category}. Checkbox: No, Text Scan: No. New Category: Other")
-                final_decision_category = "Other"
-            elif category == "Other" and (weapon_checked_by_user or weapon_found_in_text):
-                 print(f"Potential Override: LLM said 'Other', but weapon indicated. Considering as 'Violent Crime Involving a Weapon'.")
-                 final_decision_category = "Violent Crime Involving a Weapon"
-            elif category == "Distribution Drug Related Crime":
-                description_lower = felony_input.lower()
-                is_just_possession = "possession" in description_lower and not any(dist_kw in description_lower for dist_kw in ["sell", "distribute", "manufacture", "transport", "traffic", "deliver", "cultivate", "intent to"])
-                if is_just_possession:
-                    print(f"Overriding LLM category. Original: {category}, Input appears possession only. New Category: Other")
-                    final_decision_category = "Other"
+            temp_final_categories = []
+            description_mentions_violence = text_mentions_violence(felony_input) 
 
-            final_decision_cat_display = final_decision_category # Store for display
+            for cat in final_decision_categories: 
+                current_cat = cat
+                # Override if LLM says weapon, but checkbox is NO AND text scan for weapon is NO
+                if cat == "Violent Crime Involving a Weapon" and \
+                   not weapon_checked_by_user and \
+                   not weapon_found_in_text: # Only override if BOTH signals are negative for weapon
+                    print(f"Override: LLM said '{cat}', but no weapon signal from user/text. Changing to 'Other'.")
+                    current_cat = "Other"
+                # Override if LLM says Other, but (checkbox OR text scan indicates weapon) AND description mentions violence
+                elif cat == "Other" and \
+                     (weapon_checked_by_user or weapon_found_in_text) and \
+                     description_mentions_violence:
+                    print(f"Override: LLM said 'Other', but weapon signaled AND violence in text. Changing to 'Violent Crime Involving a Weapon'.")
+                    current_cat = "Violent Crime Involving a Weapon"
+                # Override for drug possession
+                elif cat == "Distribution Drug Related Crime":
+                    description_lower = felony_input.lower()
+                    is_just_possession = "possession" in description_lower and \
+                                         not any(dist_kw in description_lower for dist_kw in 
+                                                 ["sell", "distribute", "manufacture", "transport", 
+                                                  "traffic", "deliver", "cultivate", "intent to"])
+                    if is_just_possession: 
+                        print(f"Override: LLM said '{cat}', but input seems like possession only. Changing to 'Other'.")
+                        current_cat = "Other"
+                temp_final_categories.append(current_cat)
+            final_decision_categories = temp_final_categories
+            final_decision_cats_display = final_decision_categories
 
-            if error_msg_from_llm or final_decision_category == "Error":
-                result_status = "Error"
-                reason_message = error_msg_from_llm or "LLM failed to categorize or an error occurred."
+            if error_msg_from_llm or "Error" in final_decision_categories:
+                result_status, reason_message = "Error", error_msg_from_llm or "LLM failed to categorize or an error occurred."
             else:
                 is_approved, policy_reason = check_policy_violation(
-                    final_decision_category,
-                    felony_dates_str_list,
+                    final_decision_categories, 
+                    all_felony_dates_str_list, 
                     release_date_input
                 )
 
-                # --- Input Keyword Safety Net Check ---
-                if is_approved: # Only check keywords if it wasn't already denied
-                    critical_keyword_category = check_input_for_critical_keywords(felony_input)
-                    if critical_keyword_category:
-                         # Check if the category found by keyword is different from the final decision category
-                         # This prevents denying twice for the same reason if LLM already caught it.
-                         if final_decision_category != critical_keyword_category:
-                            print(f"Keyword Safety Net Triggered: Found '{critical_keyword_category}' related keyword in input '{felony_input}'. Overriding Approval.")
-                            is_approved = False
-                            policy_reason = f"Denied based on keyword check of input description (found term related to '{critical_keyword_category}')."
+                if is_approved: 
+                    critical_keyword_categories_found = check_input_for_critical_keywords(felony_input)
+                    if critical_keyword_categories_found:
+                        for critical_cat in critical_keyword_categories_found:
+                            is_already_denied_for_similar = any(fc_cat == critical_cat for fc_cat in final_decision_categories if fc_cat in NO_GO_CATEGORIES)
+                            if not is_already_denied_for_similar or "Other" in final_decision_categories :
+                                print(f"Keyword Safety Net Triggered: Found '{critical_cat}' related keyword. Overriding Approval.")
+                                is_approved = False
+                                policy_reason = f"Denied based on keyword check of input (found term related to '{critical_cat}')."
+                                break 
 
-                result_status = "Approved" if is_approved else "Denied"
-                reason_message = policy_reason
+                result_status, reason_message = ("Approved" if is_approved else "Denied"), policy_reason
 
     felony_description_val = request.form.get('felony', '') if request.method == 'POST' else ''
     felony_dates_val = request.form.get('felony_dates', '') if request.method == 'POST' else ''
     release_date_val = request.form.get('release_date', '') if request.method == 'POST' else ''
 
-    return render_template('index.html',
-                           result=result_status,
-                           reason=reason_message,
-                           llm_output=llm_full_text,
-                           llm_category=llm_assigned_category, # Show original LLM category
-                           final_category=final_decision_cat_display, # Show category used for decision
+    return render_template('index.html', 
+                           result=result_status, reason=reason_message, 
+                           llm_output=llm_full_text, 
+                           llm_categories_display=llm_assigned_categories_display, 
+                           final_categories_display=final_decision_cats_display, 
                            felony_description_val=felony_description_val,
-                           felony_dates_val=felony_dates_val,
-                           release_date_val=release_date_val,
+                           felony_dates_val=felony_dates_val, release_date_val=release_date_val,
                            weapon_involved_val=weapon_involved_checked_on_form,
-                           weapon_in_text_val=weapon_detected_in_text_on_form)
+                           weapon_in_text_val=weapon_detected_in_text_on_form,
+                           dates_from_text_val=dates_extracted_from_text_display)
 
 
 @app.route('/check_felony', methods=['POST'])
 def check_felony_api():
     felony_input = request.form.get('felony','')
-    felony_dates_input = request.form.get('felony_dates','')
+    felony_dates_from_box_str = request.form.get('felony_dates','')
     release_date_input = request.form.get('release_date','')
-    weapon_checkbox_val = request.form.get('weapon_involved')
+    weapon_checkbox_val = request.form.get('weapon_involved') 
     weapon_checked_by_user = True if weapon_checkbox_val == 'on' else False
-
     weapon_found_in_text = text_mentions_weapon(felony_input)
+    description_mentions_violence_api = text_mentions_violence(felony_input)
 
-    felony_dates_str_list = []
-    if felony_dates_input:
-        felony_dates_str_list = [date.strip() for date in felony_dates_input.split(',') if date.strip()]
+    dates_extracted_from_text = extract_dates_from_text(felony_input)
+    felony_dates_from_box_list = []
+    if felony_dates_from_box_str:
+        felony_dates_from_box_list = [date.strip() for date in felony_dates_from_box_str.split(',') if date.strip()]
+    all_felony_dates_str_list = list(set(felony_dates_from_box_list + dates_extracted_from_text))
 
-    if not felony_input:
-        return jsonify({"status": "Error", "reason": "No felony description provided.", "llm_category": "", "llm_full_output": ""})
+    if not felony_input: return jsonify({"status": "Error", "reason": "No felony description provided."})
 
-    category, full_output, error_msg_from_llm = query_gemini_and_categorize(
-        felony_input,
-        weapon_checked_by_user=weapon_checked_by_user,
-        weapon_found_in_text=weapon_found_in_text
+    list_of_llm_categories, full_output, error_msg_from_llm = query_gemini_for_offense_analysis(
+        felony_input, weapon_checked_by_user=weapon_checked_by_user, weapon_found_in_text=weapon_found_in_text
     )
-    llm_assigned_category_for_api = category
+    llm_assigned_categories_for_api = list(list_of_llm_categories)
+    final_decision_categories = list(list_of_llm_categories)
 
-    final_decision_category = category
+    temp_final_categories = []
+    for cat in final_decision_categories:
+        current_cat = cat
+        if cat == "Violent Crime Involving a Weapon" and not weapon_checked_by_user and not weapon_found_in_text: 
+            current_cat = "Other"
+        elif cat == "Other" and (weapon_checked_by_user or weapon_found_in_text):
+            if description_mentions_violence_api: 
+                current_cat = "Violent Crime Involving a Weapon"
+        elif cat == "Distribution Drug Related Crime":
+            description_lower = felony_input.lower()
+            is_just_possession = "possession" in description_lower and not any(dist_kw in description_lower for dist_kw in ["sell", "distribute", "manufacture", "transport", "traffic", "deliver", "cultivate", "intent to"])
+            if is_just_possession: current_cat = "Other"
+        temp_final_categories.append(current_cat)
+    final_decision_categories = temp_final_categories
 
-    # Apply Overrides
-    if category == "Violent Crime Involving a Weapon" and not weapon_checked_by_user and not weapon_found_in_text:
-        print(f"API: Overriding LLM category. Original: {category}. Checkbox: No, Text Scan: No. New Category: Other")
-        final_decision_category = "Other"
-    elif category == "Other" and (weapon_checked_by_user or weapon_found_in_text):
-        print(f"API Notice: LLM said 'Other', but weapon indicated. Considering as 'Violent Crime Involving a Weapon'.")
-        final_decision_category = "Violent Crime Involving a Weapon"
-    elif category == "Distribution Drug Related Crime":
-        description_lower = felony_input.lower()
-        is_just_possession = "possession" in description_lower and not any(dist_kw in description_lower for dist_kw in ["sell", "distribute", "manufacture", "transport", "traffic", "deliver", "cultivate", "intent to"])
-        if is_just_possession:
-            print(f"API: Overriding LLM category. Original: {category}, Input appears possession only. New Category: Other")
-            final_decision_category = "Other"
 
-    if error_msg_from_llm or final_decision_category == "Error":
-        return jsonify({"status": "Error", "reason": error_msg_from_llm or "LLM failed to categorize or an error occurred.",
-                        "llm_category_by_llm": llm_assigned_category_for_api,
-                        "final_category_used_for_decision": final_decision_category,
-                        "weapon_checkbox_status": weapon_checked_by_user,
-                        "weapon_detected_in_text": weapon_found_in_text,
-                        "llm_full_output": full_output})
+    if error_msg_from_llm or "Error" in final_decision_categories:
+        return jsonify({"status": "Error", "reason": error_msg_from_llm or "LLM failed to categorize.", 
+                        "llm_categories_by_llm": llm_assigned_categories_for_api, 
+                        "final_categories_used_for_decision": final_decision_categories,
+                        "dates_from_text": dates_extracted_from_text, "llm_full_output": full_output})
     else:
-        is_approved, policy_reason = check_policy_violation(
-            final_decision_category,
-            felony_dates_str_list,
-            release_date_input
-        )
+        is_approved, policy_reason = check_policy_violation(final_decision_categories, all_felony_dates_str_list, release_date_input)
+        final_status, final_reason, keyword_override_reason = ("Approved" if is_approved else "Denied"), policy_reason, None
 
-        # --- Input Keyword Safety Net Check for API ---
-        final_status = "Approved" if is_approved else "Denied"
-        final_reason = policy_reason
-        keyword_override_reason = None
-
-        if is_approved: # Only check keywords if not already denied by category/date
-            critical_keyword_category = check_input_for_critical_keywords(felony_input)
-            if critical_keyword_category:
-                 if final_decision_category != critical_keyword_category:
-                    print(f"API Keyword Safety Net Triggered: Found '{critical_keyword_category}' related keyword in input '{felony_input}'. Overriding Approval.")
-                    final_status = "Denied"
-                    is_approved = False # Ensure boolean matches
-                    keyword_override_reason = f"Denied based on keyword check of input description (found term related to '{critical_keyword_category}')."
-                    final_reason = keyword_override_reason # Use keyword reason if it overrides
+        if is_approved:
+            critical_keyword_categories_found = check_input_for_critical_keywords(felony_input)
+            if critical_keyword_categories_found:
+                for critical_cat in critical_keyword_categories_found:
+                    is_already_denied_for_similar = any(fc_cat == critical_cat for fc_cat in final_decision_categories if fc_cat in NO_GO_CATEGORIES)
+                    if not is_already_denied_for_similar or "Other" in final_decision_categories:
+                        final_status, is_approved = "Denied", False
+                        keyword_override_reason = f"Denied by input keyword check (found '{critical_cat}')."
+                        final_reason = keyword_override_reason; break
 
         return jsonify({
-            "status": final_status,
-            "is_approved": is_approved,
-            "reason": final_reason,
-            "llm_category_by_llm": llm_assigned_category_for_api,
-            "final_category_used_for_decision": final_decision_category,
-            "keyword_override_reason": keyword_override_reason, # Indicate if keyword override happened
+            "status": final_status, "is_approved": is_approved, "reason": final_reason,
+            "llm_categories_by_llm": llm_assigned_categories_for_api, 
+            "final_categories_used_for_decision": final_decision_categories,
+            "keyword_override_reason": keyword_override_reason,
             "weapon_checkbox_status": weapon_checked_by_user,
             "weapon_detected_in_text": weapon_found_in_text,
+            "description_mentions_violence": description_mentions_violence_api, 
+            "dates_from_text": dates_extracted_from_text,
+            "dates_from_box": felony_dates_from_box_list,
+            "combined_dates_used": all_felony_dates_str_list,
             "llm_full_output": full_output
         })
 

@@ -35,50 +35,56 @@ NO_GO_CATEGORIES = [
 ]
 
 # --- Define Critical Keywords for Input Scan (Safety Net) ---
+# This list should contain terms that *unambiguously* point to a No Go category,
+# especially if the LLM might misinterpret or be too lenient.
 CRITICAL_INPUT_KEYWORDS = {
-    "Violent Crime Involving a Weapon": ["armed", "weapon", "firearm", "gun", "knife", "stabbing", "shooting", "missile", "explosive", "bomb", "shovel"], # Added shovel
-    "Sexual Related Crime": ["sexual assault", "rape", "molestation", "child pornography", "non-consensual sex", "involuntary sex"],
-    "Murder or Manslaughter": ["murder", "manslaughter", "homicide"],
+    "Violent Crime Involving a Weapon": [
+        "armed robbery", "assault with a deadly weapon", # Phrases implying violence + weapon
+        "stabbing with", "shooting at", "shot someone", "fired a gun at", # Actions
+        "brandished a weapon during", # Contextual use implying threat
+        "used a gun in a robbery", "used a knife to threaten",
+        "explosive device", "bombing", # Inherently violent + weapon
+        # Removed generic "weapon", "firearm", "gun", "knife" as standalone critical terms
+        # to avoid flagging mere possession. The LLM + override logic should handle nuances.
+        # "shovel" used in a violent context would be caught by LLM or violence keyword + weapon keyword.
+    ],
+    "Sexual Related Crime": ["sexual assault", "rape", "molestation", "child pornography", "non-consensual sex", "involuntary sex", "sexual battery"],
+    "Murder or Manslaughter": ["murder", "manslaughter", "homicide", "killed someone"],
     "Distribution Drug Related Crime": ["sell drugs", "distribute drugs", "manufacture drugs", "transport drugs", "traffic drugs", "deliver drugs", "cultivate drugs", "intent to distribute", "intent to sell"],
     "Human Trafficking": [
-        "human trafficking", "trafficking of persons", "trafficking a person", "trafficking an individual",
-        "forced labor", "involuntary servitude", "debt bondage", "compelled service",
-        "sexual exploitation trafficking", "sex trafficking", "commercial sexual exploitation of a minor",
-        "exploiting a person for labor", "exploiting an individual for sex", "coercing a person into labor", "coercing a person into prostitution",
+        "human trafficking", "trafficking of persons",
+        "forced labor", "involuntary servitude",
+        "sex trafficking", "commercial sexual exploitation of a minor",
+        "exploiting a person", "coercing a person",
         "transporting persons for exploitation", "harboring persons for exploitation",
-        "recruiting persons for exploitation", "child trafficking", "minor trafficking", "trafficking of children",
-        "person for prostitution", "individual for prostitution", "child for prostitution",
-        "person smuggling", "people smuggling", "smuggling persons", "smuggling people", 
-        "smuggling individuals", "smuggling children", "smuggling minors", "alien smuggling"
+        "recruiting persons for exploitation", "child trafficking",
+        "person smuggling", "people smuggling", "alien smuggling" 
     ]
 }
 
 # --- Weapon Keyword Detection ---
 WEAPON_KEYWORDS = [
-    # Traditional weapons
     "weapon", "gun", "firearm", "handgun", "shotgun", "rifle", "pistol", "revolver",
     "knife", "dagger", "blade", "stabbing", "slashing", "sword", "machete", "axe", "hatchet",
     "armed", "explosive", "bomb", "grenade", "missile", "detonator",
-    # Improvised / Less common but still weapons / items used as weapons
     "brass knuckles", "knuckles", "club", "bat", "baseball bat", "blunt object", "crowbar", 
     "tire iron", "pipe", "metal pipe", "stick", "heavy stick", "rock", "brick", "heavy object", "bottle", "glass bottle",
-    "shovel", # Added shovel
+    "shovel", 
     "deadly weapon", "dangerous instrument", "improvised weapon",
-    # Actions strongly implying weapons
     "assault rifle", "machine gun", "shooter", "shooting", "shot", "fired a"
 ]
 
 # --- Violence Keywords (for distinguishing possession from violent use) ---
 VIOLENCE_KEYWORDS = [
-    "assault", "battery", "attack", "fight", "robbery", "threaten", "menace", "brandish", "beat", "beating", # Added beat, beating
-    "injure", "harm", "homicide", "murder", "manslaughter", "violent", "struck", "stabbed", "shot at"
+    "assault", "battery", "attack", "fight", "robbery", "threaten", "menace", "brandish", "beat", "beating", 
+    "injure", "harm", "homicide", "murder", "manslaughter", "violent", "struck", "stabbed", "shot at", "used to harm", "used to threaten",
+    "killed", "wounded", "victimized"
 ]
 
 def text_mentions_weapon(description):
     if not description: return False
     description_lower = description.lower()
     for keyword in WEAPON_KEYWORDS:
-        # Use word boundaries for shorter/common words to avoid false positives
         if keyword in ["armed", "bat", "gun", "knife", "club", "rock", "stick", "pipe", "shot", "shovel"]: 
             if re.search(r'\b' + re.escape(keyword) + r'\b', description_lower): return True
         elif keyword in description_lower: return True
@@ -162,7 +168,7 @@ def query_gemini_for_offense_analysis(felony_description, weapon_checked_by_user
     if weapon_found_in_text: weapon_guidance_parts.append("Text analysis of the description suggests a weapon was mentioned.")
     else: weapon_guidance_parts.append("Text analysis of the description did not find common weapon keywords.")
 
-    weapon_guidance_parts.append('Note: A "weapon" can include traditional arms as well as any object used to inflict or threaten serious harm (e.g., a stick, rock, heavy object, bottle, vehicle used intentionally to harm, shovel) if the context implies its use as such in a violent crime.') # Added shovel to example
+    weapon_guidance_parts.append('Note: A "weapon" can include traditional arms as well as any object used to inflict or threaten serious harm (e.g., a stick, rock, heavy object, bottle, vehicle used intentionally to harm, shovel) if the context implies its use as such in a violent crime.')
     combined_weapon_guidance = " ".join(weapon_guidance_parts)
 
     prompt = f"""
@@ -177,7 +183,7 @@ Instructions:
 2.  Identify each distinct potential felony described.
 3.  For EACH distinct offense identified, assign it the most fitting category from the "Categories to choose from" list below.
     - Consider the weapon guidance for each offense. Remember the broad definition of a weapon if used to cause harm.
-    - For "Violent Crime Involving a Weapon": The description must indicate BOTH a violent act (e.g., assault, battery, robbery, threat with a weapon, beating) AND the involvement of a weapon (including improvised items like a shovel, stick, rock, used to harm) in that specific violent act. Mere possession of a weapon, even if a felony, without a described violent act using it, should be categorized as "Other" unless it fits another prohibited category.
+    - For "Violent Crime Involving a Weapon": The description must indicate BOTH a violent act (e.g., assault, battery, robbery, threat with a weapon, beating) AND the involvement of a weapon (including improvised items like a shovel, stick, rock, used to harm) in that specific violent act. Mere possession of a weapon (e.g., "felony possession of a firearm"), even if a felony, without a described violent act *using* that weapon, should be categorized as "Other" unless it fits another prohibited category.
     - For drug-related offenses: If it's only possession, categorize as "Other". If it's selling, manufacturing, trafficking, etc., use "Distribution Drug Related Crime".
     - For "Human Trafficking": Consider descriptions involving the recruitment, transportation, harboring, or receipt of persons (adults, children, individuals) through force, fraud, or coercion for the purpose of exploitation (like forced labor or sexual exploitation), OR descriptions involving the illegal smuggling of persons (e.g., "person smuggling," "alien smuggling"), even if terms like "accidental" are used by the input, if the act of smuggling itself is a felony.
     - If an offense doesn't fit a specific prohibited category, assign "Other".
@@ -301,7 +307,8 @@ def check_input_for_critical_keywords(felony_input):
     found_critical_categories = set()
     for category, keywords in CRITICAL_INPUT_KEYWORDS.items():
         for keyword in keywords:
-            if keyword in ["armed", "gun", "knife", "bat", "club", "murder", "missile", "explosive", "bomb", "rape", "sex", "labor", "persons", "child", "minor", "smuggling", "shovel"]: # Added shovel
+            # Use word boundaries for keywords that could be substrings or are very common
+            if keyword in ["armed", "gun", "knife", "bat", "club", "murder", "missile", "explosive", "bomb", "rape", "sex", "labor", "persons", "child", "minor", "smuggling", "shovel", "stabbing", "shooting"]: 
                  if re.search(r'\b' + re.escape(keyword) + r'\b', input_lower):
                     found_critical_categories.add(category); break 
             elif keyword in input_lower: 
@@ -351,30 +358,31 @@ def index_route():
 
             temp_final_categories = []
             description_mentions_violence = text_mentions_violence(felony_input) 
+            description_lower = felony_input.lower() 
 
             for cat in final_decision_categories: 
                 current_cat = cat
-                # Override if LLM says weapon, but checkbox is NO AND text scan for weapon is NO
-                if cat == "Violent Crime Involving a Weapon" and \
-                   not weapon_checked_by_user and \
-                   not weapon_found_in_text: # Only override if BOTH signals are negative for weapon
-                    print(f"Override: LLM said '{cat}', but no weapon signal from user/text. Changing to 'Other'.")
-                    current_cat = "Other"
-                # Override if LLM says Other, but (checkbox OR text scan indicates weapon) AND description mentions violence
-                elif cat == "Other" and \
-                     (weapon_checked_by_user or weapon_found_in_text) and \
-                     description_mentions_violence:
+                is_just_weapon_possession = "possession" in description_lower and weapon_found_in_text and not description_mentions_violence
+
+                if cat == "Violent Crime Involving a Weapon":
+                    if is_just_weapon_possession:
+                        print(f"Override: LLM said '{cat}', but description is weapon possession without violence. Changing to 'Other'.")
+                        current_cat = "Other"
+                    elif not weapon_checked_by_user and not weapon_found_in_text: # LLM hallucinated weapon use
+                        print(f"Override: LLM said '{cat}', but no weapon signal from user/text & not clearly just possession. Changing to 'Other'.")
+                        current_cat = "Other"
+
+                elif cat == "Other" and (weapon_checked_by_user or weapon_found_in_text) and description_mentions_violence:
                     print(f"Override: LLM said 'Other', but weapon signaled AND violence in text. Changing to 'Violent Crime Involving a Weapon'.")
                     current_cat = "Violent Crime Involving a Weapon"
-                # Override for drug possession
+
                 elif cat == "Distribution Drug Related Crime":
-                    description_lower = felony_input.lower()
-                    is_just_possession = "possession" in description_lower and \
-                                         not any(dist_kw in description_lower for dist_kw in 
-                                                 ["sell", "distribute", "manufacture", "transport", 
-                                                  "traffic", "deliver", "cultivate", "intent to"])
-                    if is_just_possession: 
-                        print(f"Override: LLM said '{cat}', but input seems like possession only. Changing to 'Other'.")
+                    is_just_drug_possession = "possession" in description_lower and \
+                                             not any(dist_kw in description_lower for dist_kw in 
+                                                     ["sell", "distribute", "manufacture", "transport", 
+                                                      "traffic", "deliver", "cultivate", "intent to"])
+                    if is_just_drug_possession: 
+                        print(f"Override: LLM said '{cat}', but input seems like drug possession only. Changing to 'Other'.")
                         current_cat = "Other"
                 temp_final_categories.append(current_cat)
             final_decision_categories = temp_final_categories
@@ -427,6 +435,7 @@ def check_felony_api():
     weapon_checked_by_user = True if weapon_checkbox_val == 'on' else False
     weapon_found_in_text = text_mentions_weapon(felony_input)
     description_mentions_violence_api = text_mentions_violence(felony_input)
+    description_lower_api = felony_input.lower()
 
     dates_extracted_from_text = extract_dates_from_text(felony_input)
     felony_dates_from_box_list = []
@@ -445,15 +454,18 @@ def check_felony_api():
     temp_final_categories = []
     for cat in final_decision_categories:
         current_cat = cat
-        if cat == "Violent Crime Involving a Weapon" and not weapon_checked_by_user and not weapon_found_in_text: 
-            current_cat = "Other"
-        elif cat == "Other" and (weapon_checked_by_user or weapon_found_in_text):
-            if description_mentions_violence_api: 
-                current_cat = "Violent Crime Involving a Weapon"
+        is_just_weapon_possession_api = "possession" in description_lower_api and weapon_found_in_text and not description_mentions_violence_api
+
+        if cat == "Violent Crime Involving a Weapon":
+            if is_just_weapon_possession_api:
+                current_cat = "Other"
+            elif not weapon_checked_by_user and not weapon_found_in_text:
+                 current_cat = "Other"
+        elif cat == "Other" and (weapon_checked_by_user or weapon_found_in_text) and description_mentions_violence_api: 
+            current_cat = "Violent Crime Involving a Weapon"
         elif cat == "Distribution Drug Related Crime":
-            description_lower = felony_input.lower()
-            is_just_possession = "possession" in description_lower and not any(dist_kw in description_lower for dist_kw in ["sell", "distribute", "manufacture", "transport", "traffic", "deliver", "cultivate", "intent to"])
-            if is_just_possession: current_cat = "Other"
+            is_just_drug_possession = "possession" in description_lower_api and not any(dist_kw in description_lower_api for dist_kw in ["sell", "distribute", "manufacture", "transport", "traffic", "deliver", "cultivate", "intent to"])
+            if is_just_drug_possession: current_cat = "Other"
         temp_final_categories.append(current_cat)
     final_decision_categories = temp_final_categories
 

@@ -11,8 +11,15 @@
         input[type="text"], textarea { width: 95%; padding: 10px; margin-bottom: 15px; border: 1px solid #ddd; border-radius: 4px; }
         .checkbox-container { margin-bottom: 15px; display: flex; align-items: center; }
         .checkbox-container input[type="checkbox"] { margin-right: 8px; width: auto; } /* Adjust checkbox style */
-        input[type="submit"] { background-color: #007bff; color: white; padding: 10px 15px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; }
-        input[type="submit"]:hover { background-color: #0056b3; }
+        input[type="submit"], button#showInstructionsBtn { 
+            background-color: #007bff; color: white; padding: 10px 15px; 
+            border: none; border-radius: 4px; cursor: pointer; font-size: 16px; 
+            margin-bottom: 10px; 
+        }
+        input[type="submit"]:hover, button#showInstructionsBtn:hover { background-color: #0056b3; }
+        button#showInstructionsBtn { background-color: #6c757d; margin-top: 10px; } /* Different color and margin for instructions button */
+        button#showInstructionsBtn:hover { background-color: #5a6268; }
+
         .result-section { margin-top: 20px; padding: 15px; border-radius: 4px; border: 1px solid transparent; }
         .result-section.approved { background-color: #d4edda; color: #155724; border-color: #c3e6cb; }
         .result-section.denied { background-color: #f8d7da; color: #721c24; border-color: #f5c6cb; }
@@ -20,29 +27,86 @@
         h2, h3 { color: #333; }
         pre { background-color: #eee; padding: 10px; border-radius: 4px; white-space: pre-wrap; word-wrap: break-word; max-height: 300px; overflow-y: auto; }
         .form-group { margin-bottom: 1rem; }
+        .info-text { font-size: 0.9em; color: #555; margin-top: 5px;}
+        .debug-info { background-color: #f9f9f9; border: 1px solid #eee; padding: 10px; margin-top:10px; font-size:0.85em; }
+        .category-list li { margin-bottom: 0.25em; }
+
+        /* Styles for the instructions section */
+        #instructionsSection {
+            display: none; /* Hidden by default */
+            margin-top: 15px;
+            padding: 15px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background-color: #f9f9f9;
+        }
+        #instructionsSection h4 { margin-top: 0; }
+        #instructionsSection ul { padding-left: 20px; }
+        #instructionsSection ul li { margin-bottom: 8px; }
+        /* Removed .contact-info from here as it's moved */
+        
+        /* Style for the main contact info line */
+        .contact-info-main {
+            font-weight: bold;
+            color: #dc3545; /* A reddish color for attention */
+            margin-top: 5px;
+            margin-bottom: 15px;
+            padding: 10px;
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            text-align: center;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <h2>Felony Policy Checker</h2>
+
+        <p class="contact-info-main">If a response is wrong or an error has occurred, please Message Greg Conerty with a screenshot on Teams or email gconerty@uti.edu.</p>
+        
+        <button id="showInstructionsBtn">Show/Hide Instructions</button>
+
+        <div id="instructionsSection">
+            <h4>How to Use the Felony Policy Checker</h4>
+            <p>This tool helps assess a felony description against a predefined policy to determine if it meets certain criteria. It uses an AI language model to categorize offenses and then applies policy rules.</p>
+            <ul>
+                <li><strong>Enter Felony Description:</strong> Type a clear description of the felony/felonies. The system can identify multiple offenses and extract dates mentioned (e.g., "grand larceny in 2022" or "assault on 01/15/2023").</li>
+                <li><strong>Weapon explicitly involved?:</strong> Check this box if a weapon was clearly involved in any of the described offenses. Leave unchecked if no weapon or unsure (the system will also scan the text).</li>
+                <li><strong>Additional Felony Conviction Date(s):</strong> Enter conviction dates using formats like YY-MM-DD, YY-MM, YY, MM/DD/YYYY, or MM/YYYY. Separate multiple dates with a comma.</li>
+                <li><strong>Most Recent Release Date from Jail:</strong> Enter if applicable, using the same flexible date formats.</li>
+                <li><strong>Check Policy:</strong> Click to submit.</li>
+            </ul>
+            <p><strong>Review the Results:</strong></p>
+            <ul>
+                <li><strong>Result:</strong> "Approved," "Denied," or "Error."</li>
+                <li><strong>Reason:</strong> Explains the decision.</li>
+                <li><strong>LLM Assigned Category(s):</strong> The AI's interpretation of the offense(s).</li>
+                <li><strong>Final Category Used for Decision (if different):</strong> The category after any system overrides.</li>
+                <li><strong>Debug Information (below the main result):</strong> Shows checkbox status, weapon text scan result, and dates extracted from the description.</li>
+                <li><strong>Language Model Full Explanation:</strong> The AI's detailed output. Review this if the categorization seems unexpected.</li>
+            </ul>
+            <p><em>Note: The system relies on AI for categorization, which can vary. Date checks are based on the current date.</em></p>
+            </div>
+
         <form method="POST" action="/">
             <div class="form-group">
-                <label for="felony">Felony Description:</label>
-                <textarea id="felony" name="felony" rows="4" required>{{ felony_description_val }}</textarea>
+                <label for="felony">Felony Description (may include multiple offenses and dates):</label>
+                <textarea id="felony" name="felony" rows="5" required>{{ felony_description_val }}</textarea>
             </div>
 
             <div class="form-group checkbox-container">
                 <input type="checkbox" id="weapon_involved" name="weapon_involved" {% if weapon_involved_val %}checked{% endif %}>
-                <label for="weapon_involved" style="font-weight: normal; margin-bottom: 0;">Weapon explicitly involved?</label>
+                <label for="weapon_involved" style="font-weight: normal; margin-bottom: 0;">Weapon explicitly involved in any described offense? (User input)</label>
             </div>
 
             <div class="form-group">
-                <label for="felony_dates">Felony Date(s) (YYYY-MM-DD, comma-separated if multiple):</label>
-                <input type="text" id="felony_dates" name="felony_dates" placeholder="e.g., 2023-01-15, 2021-05-20" value="{{ felony_dates_val }}">
+                <label for="felony_dates">Additional Felony Conviction Date(s) (YYYY-MM-DD, YY-MM, YY, MM/DD/YYYY, MM/YYYY, comma-separated):</label>
+                <input type="text" id="felony_dates" name="felony_dates" placeholder="e.g., 2023-01-15, 05/2022, 2020, 12-25-2019" value="{{ felony_dates_val }}">
             </div>
             <div class="form-group">
-                <label for="release_date">Release Date from Jail (YYYY-MM-DD):</label>
-                <input type="text" id="release_date" name="release_date" placeholder="e.g., 2024-03-10" value="{{ release_date_val }}">
+                <label for="release_date">Most Recent Release Date from Jail (YYYY-MM-DD, YY-MM, YY, MM/DD/YYYY, MM/YYYY):</label>
+                <input type="text" id="release_date" name="release_date" placeholder="e.g., 2024-03-10, 03/2024, 2024, 01-15-2023" value="{{ release_date_val }}">
             </div>
             <input type="submit" value="Check Policy">
         </form>
@@ -53,21 +117,61 @@
             {% if reason %}
                 <p><strong>Reason:</strong> {{ reason }}</p>
             {% endif %}
-            {% if llm_category and llm_category != "Error" %}
-                <p><strong>LLM Assigned Category:</strong> {{ llm_category }}</p>
+            
+            {% if llm_categories_display and llm_categories_display != ["Error"] %}
+                <p><strong>LLM Assigned Categories for Described Offenses:</strong></p>
+                <ul class="category-list">
+                    {% for cat in llm_categories_display %}
+                        <li>{{ cat }}</li>
+                    {% endfor %}
+                </ul>
+            {% endif %}
+
+            {% if final_categories_display and final_categories_display != llm_categories_display and final_categories_display != ["Error"] %}
+                 <p><strong>Final Categories Used for Decision:</strong></p>
+                 <ul class="category-list">
+                    {% for cat in final_categories_display %}
+                        <li>{{ cat }}</li>
+                    {% endfor %}
+                </ul>
+            {% endif %}
+
+            {% if request.method == 'POST' %} 
+                <div class="debug-info">
+                    <p>Weapon Checkbox was: {% if weapon_involved_val %}Checked{% else %}Unchecked{% endif %}</p>
+                    <p>Weapon Keyword(s) Detected in Description Text: {% if weapon_in_text_val %}Yes{% else %}No{% endif %}</p>
+                    {% if dates_from_text_val %}
+                        <p>Dates extracted from description: {{ dates_from_text_val|join(', ') }}</p>
+                    {% endif %}
+                </div>
             {% endif %}
         </div>
         {% endif %}
 
-        {% if llm_output and not result == "Error" %} <div>
+        {% if llm_output and not result == "Error" %} 
+        <div>
             <h3>Language Model Full Explanation:</h3>
             <pre>{{ llm_output }}</pre>
         </div>
-        {% elif result == "Error" and llm_output %} <div>
+        {% elif result == "Error" and llm_output %} 
+         <div>
             <h3>Language Model Output (may contain error details):</h3>
             <pre>{{ llm_output }}</pre>
         </div>
         {% endif %}
     </div>
+
+    <script>
+        document.getElementById('showInstructionsBtn').addEventListener('click', function() {
+            var instructionsDiv = document.getElementById('instructionsSection');
+            if (instructionsDiv.style.display === 'none' || instructionsDiv.style.display === '') {
+                instructionsDiv.style.display = 'block';
+                this.textContent = 'Hide Instructions';
+            } else {
+                instructionsDiv.style.display = 'none';
+                this.textContent = 'Show Instructions';
+            }
+        });
+    </script>
 </body>
 </html>

@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Application Log</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
+        .container { max-width: 1000px; margin: auto; background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        h2 { color: #333; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+        .log-entry { 
+            border: 1px solid #ddd; 
+            border-radius: 5px; 
+            padding: 15px; 
+            margin-bottom: 15px; 
+            background-color: #fdfdfd;
+        }
+        .log-entry p { margin: 5px 0; }
+        .log-entry strong { color: #555; }
+        .log-entry .llm-output {
+            background-color: #f0f0f0;
+            padding: 10px;
+            border-radius: 3px;
+            max-height: 200px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-size: 0.9em;
+            margin-top: 10px;
+        }
+        .log-entry .denied { color: red; font-weight: bold;}
+        .log-entry .approved { color: green; font-weight: bold;}
+        .log-entry .error { color: orange; font-weight: bold;}
+        .back-link { display: block; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="{{ url_for('index_route') }}" class="back-link">&laquo; Back to Checker</a>
+        <h2>Application Log (Last {{ logs|length }} entries)</h2>
+
+        {% if not logs %}
+            <p>No log entries yet.</p>
+        {% else %}
+            {% for entry in logs %}
+                <div class="log-entry">
+                    <p><strong>Timestamp:</strong> {{ entry.timestamp }}</p>
+                    <p><strong>Source:</strong> {{ entry.get('source', 'Web UI') }}</p>
+                    <p><strong>Felony Description Input:</strong> {{ entry.felony_input }}</p>
+                    <p><strong>Weapon Checkbox:</strong> {{ 'Checked' if entry.weapon_checkbox else 'Unchecked' }}</p>
+                    <p><strong>Weapon in Text:</strong> {{ 'Yes' if entry.weapon_in_text else 'No' }}</p>
+                    {% if entry.get('description_mentions_violence') is not none %}
+                        <p><strong>Description Mentions Violence:</strong> {{ 'Yes' if entry.description_mentions_violence else 'No' }}</p>
+                    {% endif %}
+                    <p><strong>Felony Dates (Box):</strong> {{ entry.felony_dates_box or 'N/A' }}</p>
+                    <p><strong>Release Date (Box):</strong> {{ entry.release_date_box or 'N/A' }}</p>
+                    <p><strong>Dates from Text:</strong> {{ entry.dates_from_text|join(', ') if entry.dates_from_text else 'None' }}</p>
+                    <p><strong>Combined Dates Used:</strong> {{ entry.combined_felony_dates_used|join(', ') if entry.combined_felony_dates_used else 'None' }}</p>
+                    <hr>
+                    <p><strong>LLM Assigned Categories:</strong> {{ entry.llm_assigned_categories|join(', ') }}</p>
+                    <p><strong>Final Decision Categories:</strong> {{ entry.final_decision_categories|join(', ') }}</p>
+                    {% if entry.get('keyword_override_reason') %}
+                         <p><strong>Keyword Override:</strong> {{ entry.keyword_override_reason }}</p>
+                    {% endif %}
+                     <p><strong>Final Result:</strong> 
+                        <span class="{% if entry.final_result == 'Approved' %}approved{% elif entry.final_result == 'Denied' %}denied{% else %}error{% endif %}">
+                            {{ entry.final_result }}
+                        </span>
+                    </p>
+                    <p><strong>Final Reason:</strong> {{ entry.final_reason }}</p>
+                    {% if entry.llm_full_output %}
+                        <p><strong>LLM Full Output:</strong></p>
+                        <pre class="llm-output">{{ entry.llm_full_output }}</pre>
+                    {% endif %}
+                </div>
+            {% endfor %}
+        {% endif %}
+    </div>
+</body>
+</html>

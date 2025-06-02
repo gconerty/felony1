@@ -9,13 +9,6 @@ import calendar # Needed for finding the last day of the month
 # Initialize Flask application
 app = Flask(__name__)
 
-# --- In-memory Log Storage ---
-# This list will store dictionaries, each representing a log entry.
-# Note: This log is in-memory and will be cleared if the application restarts.
-# For persistent logging, a database or file logging would be needed.
-application_log = []
-MAX_LOG_ENTRIES = 100 # Limit the number of log entries to prevent memory issues
-
 # --- Google Gemini API Configuration ---
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 gemini_model = None
@@ -62,7 +55,8 @@ CRITICAL_INPUT_KEYWORDS = {
         "recruiting persons for exploitation", "child trafficking", "minor trafficking", "trafficking of children",
         "person for prostitution", "individual for prostitution", "child for prostitution",
         "person smuggling", "people smuggling", "smuggling persons", "smuggling people", 
-        "smuggling individuals", "smuggling children", "smuggling minors", "alien smuggling"
+        "smuggling individuals", "smuggling children", "smuggling minors", "alien smuggling",
+        "abduction of a child", "child abduction", "kidnapping a child", "kidnapping of a minor" # Added abduction/kidnapping
     ]
 }
 
@@ -82,7 +76,7 @@ WEAPON_KEYWORDS = [
 VIOLENCE_KEYWORDS = [
     "assault", "battery", "attack", "fight", "robbery", "threaten", "menace", "brandish", "beat", "beating", 
     "injure", "harm", "homicide", "murder", "manslaughter", "violent", "struck", "stabbed", "shot at", "used to harm", "used to threaten",
-    "killed", "wounded", "victimized"
+    "killed", "wounded", "victimized", "abduction", "kidnap", "kidnapping" # Added abduction/kidnapping
 ]
 
 def text_mentions_weapon(description):
@@ -99,6 +93,7 @@ def text_mentions_violence(description):
     if not description: return False
     description_lower = description.lower()
     for keyword in VIOLENCE_KEYWORDS:
+        # Using word boundaries for all violence keywords to be more precise
         if re.search(r'\b' + re.escape(keyword) + r'\b', description_lower):
             return True
     return False
@@ -189,7 +184,7 @@ Instructions:
     - Consider the weapon guidance for each offense. Remember the broad definition of a weapon if used to cause harm.
     - For "Violent Crime Involving a Weapon": The description must indicate BOTH a violent act (e.g., assault, battery, robbery, threat with a weapon, beating) AND the involvement of a weapon (including improvised items like a shovel, stick, rock, used to harm) in that specific violent act. Mere possession of a weapon (e.g., "felony possession of a firearm"), even if a felony, without a described violent act *using* that weapon, should be categorized as "Other" unless it fits another prohibited category.
     - For drug-related offenses: If it's only possession, categorize as "Other". If it's selling, manufacturing, trafficking, etc., use "Distribution Drug Related Crime".
-    - For "Human Trafficking": Consider descriptions involving the recruitment, transportation, harboring, or receipt of persons (adults, children, individuals) through force, fraud, or coercion for the purpose of exploitation (like forced labor or sexual exploitation), OR descriptions involving the illegal smuggling of persons (e.g., "person smuggling," "alien smuggling"), even if terms like "accidental" are used by the input, if the act of smuggling itself is a felony.
+    - For "Human Trafficking": Consider descriptions involving the recruitment, transportation, harboring, or receipt of persons (adults, children, individuals) through force, fraud, or coercion for the purpose of exploitation (like forced labor or sexual exploitation), OR descriptions involving the illegal smuggling of persons (e.g., "person smuggling," "alien smuggling"), OR offenses like "child abduction" or "kidnapping of a child". Even if terms like "accidental" are used by the input for smuggling/abduction, if the act itself is a felony, it should be considered for this category.
     - If an offense doesn't fit a specific prohibited category, assign "Other".
 4.  Format your output for the categories by listing each identified offense and its category. Start each category on a new line, prefixed with "Identified Category: ".
     Example of format for multiple offenses:
@@ -311,7 +306,7 @@ def check_input_for_critical_keywords(felony_input):
     found_critical_categories = set()
     for category, keywords in CRITICAL_INPUT_KEYWORDS.items():
         for keyword in keywords:
-            if keyword in ["armed", "gun", "knife", "bat", "club", "murder", "missile", "explosive", "bomb", "rape", "sex", "labor", "persons", "child", "minor", "smuggling", "shovel", "stabbing", "shooting"]: 
+            if keyword in ["armed", "gun", "knife", "bat", "club", "murder", "missile", "explosive", "bomb", "rape", "sex", "labor", "persons", "child", "minor", "smuggling", "shovel", "stabbing", "shooting", "abduction", "kidnap", "kidnapping"]: 
                  if re.search(r'\b' + re.escape(keyword) + r'\b', input_lower):
                     found_critical_categories.add(category); break 
             elif keyword in input_lower: 
@@ -320,9 +315,7 @@ def check_input_for_critical_keywords(felony_input):
 
 # --- Function to Add to Log ---
 def add_to_log(log_entry):
-    """Adds an entry to the in-memory log, ensuring it doesn't exceed MAX_LOG_ENTRIES."""
-    if len(application_log) >= MAX_LOG_ENTRIES:
-        application_log.pop(0) # Remove the oldest entry
+    if len(application_log) >= MAX_LOG_ENTRIES: application_log.pop(0)
     application_log.append(log_entry)
 
 # --- Flask Routes ---

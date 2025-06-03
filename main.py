@@ -86,8 +86,21 @@ VIOLENCE_KEYWORDS = [
 def text_mentions_weapon(description):
     if not description: return False
     description_lower = description.lower()
+
+    # Check for explicit negations of weapon first
+    negation_patterns = [
+        r'\bno\s+weapon\b',
+        r'\bwithout\s+a\s+weapon\b',
+        r'\bwithout\s+weapon\b', # Handles cases like "assault without weapon"
+        r'\bnot\s+armed\b',
+        r'\bunarmed\b'
+    ]
+    for neg_pattern in negation_patterns:
+        if re.search(neg_pattern, description_lower):
+            return False # Explicitly no weapon mentioned in a negating context
+
     for keyword in WEAPON_KEYWORDS:
-        # Use word boundaries for ALL keywords to prevent partial matches like "weapon" in "no weapon"
+        # Use word boundaries for ALL keywords to prevent partial matches
         if re.search(r'\b' + re.escape(keyword) + r'\b', description_lower):
             return True
     return False
@@ -306,13 +319,23 @@ def check_policy_violation(list_of_llm_categories, felony_dates_str_list=None, r
 def check_input_for_critical_keywords(felony_input):
     if not felony_input: return None
     input_lower = felony_input.lower()
+
+    # Check for explicit negations of weapon first if we are checking for weapon related critical keywords
+    if any(re.search(neg_pattern, input_lower) for neg_pattern in [r'\bno\s+weapon\b', r'\bwithout\s+a\s+weapon\b', r'\bwithout\s+weapon\b', r'\bnot\s+armed\b', r'\bunarmed\b']):
+        # If weapon is explicitly negated, don't let weapon-related CRITICAL_KEYWORDS trigger a "Violent Crime Involving a Weapon" from this safety net.
+        # Other critical keywords can still be checked.
+        categories_to_skip_for_keywords = ["Violent Crime Involving a Weapon"]
+    else:
+        categories_to_skip_for_keywords = []
+
     found_critical_categories = set()
     for category, keywords in CRITICAL_INPUT_KEYWORDS.items():
+        if category in categories_to_skip_for_keywords:
+            continue
         for keyword in keywords:
-            # Apply word boundaries to all critical keywords for more precision
             if re.search(r'\b' + re.escape(keyword) + r'\b', input_lower):
                 found_critical_categories.add(category)
-                break # Move to next category once one keyword matches for this category
+                break 
     return list(found_critical_categories) if found_critical_categories else []
 
 # --- Function to Add to Log ---
@@ -345,7 +368,7 @@ def index_route():
         log_entry_details['release_date_box'] = release_date_input
 
         weapon_involved_checked_on_form = weapon_checked_by_user 
-        weapon_found_in_text = text_mentions_weapon(felony_input)
+        weapon_found_in_text = text_mentions_weapon(felony_input) # This will now be False for "assault without a weapon"
         weapon_detected_in_text_on_form = weapon_found_in_text 
         log_entry_details['weapon_in_text'] = weapon_found_in_text
 
@@ -367,7 +390,7 @@ def index_route():
             list_of_llm_categories, full_output, error_msg_from_llm = query_gemini_for_offense_analysis(
                 felony_input, 
                 weapon_checked_by_user=weapon_checked_by_user,
-                weapon_found_in_text=weapon_found_in_text
+                weapon_found_in_text=weapon_found_in_text # Pass the corrected value
             )
             llm_full_text = full_output
             llm_assigned_categories_display = list_of_llm_categories 
@@ -388,13 +411,19 @@ def index_route():
                     if is_just_weapon_possession:
                         print(f"Override: LLM said '{cat}', but description is weapon possession without violence. Changing to 'Other'.")
                         current_cat = "Other"
+                    # This part of the override is now less likely to be problematic with corrected text_mentions_weapon
                     elif not weapon_checked_by_user and not weapon_found_in_text: 
                         print(f"Override: LLM said '{cat}', but no weapon signal from user/text & not clearly just possession. Changing to 'Other'.")
                         current_cat = "Other"
 
                 elif cat == "Other" and (weapon_checked_by_user or weapon_found_in_text) and description_mentions_violence:
-                    print(f"Override: LLM said 'Other', but weapon signaled AND violence in text. Changing to 'Violent Crime Involving a Weapon'.")
-                    current_cat = "Violent Crime Involving a Weapon"
+                     # Check if the input explicitly negates weapon use, even if weapon_found_in_text was true due to "weapon"
+                    explicit_no_weapon_in_text = any(re.search(neg_pattern, description_lower) for neg_pattern in [r'\bno\s+weapon\b', r'\bwithout\s+a\s+weapon\b', r'\bwithout\s+weapon\b', r'\bunarmed\b'])
+                    if not explicit_no_weapon_in_text:
+                        print(f"Override: LLM said 'Other', but weapon signaled AND violence in text (and no explicit negation of weapon). Changing to 'Violent Crime Involving a Weapon'.")
+                        current_cat = "Violent Crime Involving a Weapon"
+                    else:
+                        print(f"Notice: LLM said 'Other', weapon keyword found but also negated in text. Violence present. Keeping 'Other'.")
 
                 elif cat == "Distribution Drug Related Crime":
                     is_just_drug_possession = "possession" in description_lower and \
@@ -471,7 +500,7 @@ def check_felony_api():
         'release_date_box': release_date_input
     }
 
-    weapon_found_in_text = text_mentions_weapon(felony_input)
+    weapon_found_in_text = text_mentions_weapon(felony_input) # Corrected function
     description_mentions_violence_api = text_mentions_violence(felony_input)
     description_lower_api = felony_input.lower()
     log_entry_details['weapon_in_text'] = weapon_found_in_text
@@ -506,11 +535,16 @@ def check_felony_api():
     for cat in final_decision_categories:
         current_cat = cat
         is_just_weapon_possession_api = "possession" in description_lower_api and weapon_found_in_text and not description_mentions_violence_api
+
         if cat == "Violent Crime Involving a Weapon":
             if is_just_weapon_possession_api: current_cat = "Other"
             elif not weapon_checked_by_user and not weapon_found_in_text: current_cat = "Other"
+
         elif cat == "Other" and (weapon_checked_by_user or weapon_found_in_text) and description_mentions_violence_api: 
-            current_cat = "Violent Crime Involving a Weapon"
+            explicit_no_weapon_in_text_api = any(re.search(neg_pattern, description_lower_api) for neg_pattern in [r'\bno\s+weapon\b', r'\bwithout\s+a\s+weapon\b', r'\bwithout\s+weapon\b', r'\bunarmed\b'])
+            if not explicit_no_weapon_in_text_api:
+                current_cat = "Violent Crime Involving a Weapon"
+
         elif cat == "Distribution Drug Related Crime":
             is_just_drug_possession = "possession" in description_lower_api and not any(dist_kw in description_lower_api for dist_kw in ["sell", "distribute", "manufacture", "transport", "traffic", "deliver", "cultivate", "intent to"])
             if is_just_drug_possession: current_cat = "Other"
@@ -565,7 +599,6 @@ def check_felony_api():
 # --- New Log Route ---
 @app.route('/log')
 def view_log():
-    # Ensure application_log is accessible here as well
     global application_log
     return render_template('log.html', logs=list(reversed(application_log)))
 

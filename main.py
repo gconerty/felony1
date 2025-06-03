@@ -10,11 +10,8 @@ import calendar # Needed for finding the last day of the month
 app = Flask(__name__)
 
 # --- In-memory Log Storage ---
-# This list is defined globally at the module level.
-# It will store dictionaries, each representing a log entry.
-# Note: This log is in-memory and will be cleared if the application restarts.
 application_log = [] 
-MAX_LOG_ENTRIES = 100 # Limit the number of log entries to prevent memory issues
+MAX_LOG_ENTRIES = 100 
 
 # --- Google Gemini API Configuration ---
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
@@ -90,9 +87,9 @@ def text_mentions_weapon(description):
     if not description: return False
     description_lower = description.lower()
     for keyword in WEAPON_KEYWORDS:
-        if keyword in ["armed", "bat", "gun", "knife", "club", "rock", "stick", "pipe", "shot", "shovel"]: 
-            if re.search(r'\b' + re.escape(keyword) + r'\b', description_lower): return True
-        elif keyword in description_lower: return True
+        # Use word boundaries for ALL keywords to prevent partial matches like "weapon" in "no weapon"
+        if re.search(r'\b' + re.escape(keyword) + r'\b', description_lower):
+            return True
     return False
 
 def text_mentions_violence(description):
@@ -312,18 +309,14 @@ def check_input_for_critical_keywords(felony_input):
     found_critical_categories = set()
     for category, keywords in CRITICAL_INPUT_KEYWORDS.items():
         for keyword in keywords:
-            if keyword in ["armed", "gun", "knife", "bat", "club", "murder", "missile", "explosive", "bomb", "rape", "sex", "labor", "persons", "child", "minor", "smuggling", "shovel", "stabbing", "shooting", "abduction", "kidnap", "kidnapping"]: 
-                 if re.search(r'\b' + re.escape(keyword) + r'\b', input_lower):
-                    found_critical_categories.add(category); break 
-            elif keyword in input_lower: 
-                found_critical_categories.add(category); break 
+            # Apply word boundaries to all critical keywords for more precision
+            if re.search(r'\b' + re.escape(keyword) + r'\b', input_lower):
+                found_critical_categories.add(category)
+                break # Move to next category once one keyword matches for this category
     return list(found_critical_categories) if found_critical_categories else []
 
 # --- Function to Add to Log ---
 def add_to_log(log_entry):
-    """Adds an entry to the in-memory log, ensuring it doesn't exceed MAX_LOG_ENTRIES."""
-    # Ensure application_log is treated as global if we are re-binding it (though append/pop modify in place)
-    # However, NameError suggests it's not seen at all. This line is for clarity.
     global application_log 
     if len(application_log) >= MAX_LOG_ENTRIES: 
         application_log.pop(0) 

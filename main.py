@@ -9,6 +9,13 @@ import calendar # Needed for finding the last day of the month
 # Initialize Flask application
 app = Flask(__name__)
 
+# --- In-memory Log Storage ---
+# This list is defined globally at the module level.
+# It will store dictionaries, each representing a log entry.
+# Note: This log is in-memory and will be cleared if the application restarts.
+application_log = [] 
+MAX_LOG_ENTRIES = 100 # Limit the number of log entries to prevent memory issues
+
 # --- Google Gemini API Configuration ---
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 gemini_model = None
@@ -56,7 +63,7 @@ CRITICAL_INPUT_KEYWORDS = {
         "person for prostitution", "individual for prostitution", "child for prostitution",
         "person smuggling", "people smuggling", "smuggling persons", "smuggling people", 
         "smuggling individuals", "smuggling children", "smuggling minors", "alien smuggling",
-        "abduction of a child", "child abduction", "kidnapping a child", "kidnapping of a minor" # Added abduction/kidnapping
+        "abduction of a child", "child abduction", "kidnapping a child", "kidnapping of a minor" 
     ]
 }
 
@@ -76,7 +83,7 @@ WEAPON_KEYWORDS = [
 VIOLENCE_KEYWORDS = [
     "assault", "battery", "attack", "fight", "robbery", "threaten", "menace", "brandish", "beat", "beating", 
     "injure", "harm", "homicide", "murder", "manslaughter", "violent", "struck", "stabbed", "shot at", "used to harm", "used to threaten",
-    "killed", "wounded", "victimized", "abduction", "kidnap", "kidnapping" # Added abduction/kidnapping
+    "killed", "wounded", "victimized", "abduction", "kidnap", "kidnapping" 
 ]
 
 def text_mentions_weapon(description):
@@ -93,7 +100,6 @@ def text_mentions_violence(description):
     if not description: return False
     description_lower = description.lower()
     for keyword in VIOLENCE_KEYWORDS:
-        # Using word boundaries for all violence keywords to be more precise
         if re.search(r'\b' + re.escape(keyword) + r'\b', description_lower):
             return True
     return False
@@ -315,7 +321,12 @@ def check_input_for_critical_keywords(felony_input):
 
 # --- Function to Add to Log ---
 def add_to_log(log_entry):
-    if len(application_log) >= MAX_LOG_ENTRIES: application_log.pop(0)
+    """Adds an entry to the in-memory log, ensuring it doesn't exceed MAX_LOG_ENTRIES."""
+    # Ensure application_log is treated as global if we are re-binding it (though append/pop modify in place)
+    # However, NameError suggests it's not seen at all. This line is for clarity.
+    global application_log 
+    if len(application_log) >= MAX_LOG_ENTRIES: 
+        application_log.pop(0) 
     application_log.append(log_entry)
 
 # --- Flask Routes ---
@@ -561,6 +572,8 @@ def check_felony_api():
 # --- New Log Route ---
 @app.route('/log')
 def view_log():
+    # Ensure application_log is accessible here as well
+    global application_log
     return render_template('log.html', logs=list(reversed(application_log)))
 
 

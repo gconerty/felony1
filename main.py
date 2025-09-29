@@ -22,7 +22,10 @@ if not GOOGLE_API_KEY:
 else:
     try:
         genai.configure(api_key=GOOGLE_API_KEY)
-        GEMINI_MODEL_NAME = 'gemini-1.5-flash-latest'
+        # --- MODEL UPDATED TO 2.5 FLASH ---
+        # Switched to the newer gemini-2.5-flash model as requested.
+        # If a '404 Not Found' error occurs, check Google AI Studio for the latest available model names.
+        GEMINI_MODEL_NAME = 'gemini-2.5-flash'
         gemini_model = genai.GenerativeModel(GEMINI_MODEL_NAME)
         print(f"Using Gemini Model: {GEMINI_MODEL_NAME}")
     except Exception as e:
@@ -157,17 +160,17 @@ def parse_flexible_date(date_str):
     formats_to_try = [
         ('%Y-%m-%d', False), ('%m/%d/%Y', False), ('%m-%d-%Y', False),
         ('%b %Y', True), ('%B %Y', True), ('%b, %Y', True), ('%B, %Y', True),
-        ('%Y-%m', True), ('%m/%Y', True), ('%m-%Y', True), ('%Y', True)
+        ('%Y-%m', True), ('%m/%Y', True), ('%m-%Y', True), ('Y', True)
     ]
     for fmt, is_partial in formats_to_try:
         try:
-            string_to_parse = temp_date_str if '%b' in fmt.lower() or '%B' in fmt.lower() else date_str
+            string_to_parse = temp_date_str if 'b' in fmt.lower() or 'B' in fmt.lower() else date_str
             dt = datetime.strptime(string_to_parse, fmt)
             if is_partial:
-                if fmt in ['%Y-%m', '%m/%Y', '%m-%Y', '%b %Y', '%B %Y', '%b, %Y', '%B, %Y']: 
+                if fmt in ['%Y-%m', '%m/%Y', '%m-%Y', 'b %Y', 'B %Y', 'b, %Y', 'B, %Y']: 
                     last_day = calendar.monthrange(dt.year, dt.month)[1]
                     return dt.replace(day=last_day)
-                elif fmt == '%Y': return dt.replace(month=12, day=31)
+                elif fmt == 'Y': return dt.replace(month=12, day=31)
             return dt 
         except ValueError: continue 
     return None 
@@ -531,3 +534,4 @@ def view_log():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     app.run(debug=True, host='0.0.0.0', port=port)
+

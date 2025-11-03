@@ -23,8 +23,8 @@ if not GOOGLE_API_KEY:
 else:
     try:
         genai.configure(api_key=GOOGLE_API_KEY)
-        # Use the stable 'gemini-1.5-flash' to avoid 404 errors on '-latest' aliases
-        GEMINI_MODEL_NAME = 'gemini-1.5-flash' 
+        # Switched to 'gemini-2.5-flash' as 'gemini-1.5-flash' was also not found.
+        GEMINI_MODEL_NAME = 'gemini-2.5-flash' 
         gemini_model = genai.GenerativeModel(GEMINI_MODEL_NAME)
         print(f"Using Gemini Model: {GEMINI_MODEL_NAME}")
     except Exception as e:
@@ -158,7 +158,6 @@ def text_is_inherently_vague(description):
     description_lower = description.lower()
     # Check for vague keywords
     for keyword_pattern in VAGUE_KEYWORDS:
-        # FIX: Corrected syntax error (removed stray 'D')
         if re.search(r'\b' + keyword_pattern + r'\b', description_lower, re.IGNORECASE):
             # Check if it's ONLY vague keywords and not specific crimes
             # This avoids flagging "conspiracy to commit murder" as vague
@@ -641,7 +640,7 @@ def index_route():
             )
             llm_full_text = full_output
             llm_assigned_categories_display = list(list_of_llm_categories) 
-            log_entry_details['llm_assigned_categories'] = list_of_llm_categories
+            log_entry_details['llm_assigned_categories'] = list(list_of_llm_categories)
             log_entry_details['llm_full_output'] = full_output
 
             # --- 5. Apply Overrides & Business Logic ---
@@ -711,35 +710,48 @@ def index_route():
                 for cat in critical_keyword_categories_found
             )
 
-            # Rule 1: Vague check (from LLM)
-            if "Clarity Check: Vague" in llm_full_text:
-                 result_status = "Review Required"
-                 reason_message = "Need more information: The specific nature of the underlying felony could not be determined from the description provided."
-            # Rule 2: Pending Dismissal check
-            elif (is_no_go_offense_present or is_critical_keyword_present) and description_mentions_dismissal:
+            # --- RE-ORDERED LOGIC ---
+
+            # Rule 1: Pending Dismissal check (This overrides a denial)
+            if (is_no_go_offense_present or is_critical_keyword_present) and description_mentions_dismissal:
                 result_status = "Pending Proof"
                 reason_message = "Denied until dropped/dismissed: A disqualifying offense was mentioned but may have been dropped or dismissed. Manual verification of court records is required."
-            # Rule 3: LLM Error check
+
+            # Rule 2: LLM Error check
             elif error_msg_from_llm or "Error" in final_decision_categories:
                 result_status, reason_message = "Error", error_msg_from_llm or "LLM failed to categorize or an error occurred."
+
+            # Rule 3: Check for "No Go" categories (from LLM or overrides)
+            elif is_no_go_offense_present:
+                 denied_category = next(cat for cat in final_decision_categories if cat in NO_GO_CATEGORIES)
+                 result_status, reason_message = "Denied", f"Denied based on LLM category: '{denied_category}'"
+
+            # Rule 4: Critical Keyword Safety Net (if LLM missed it)
+            elif is_critical_keyword_present:
+                 missed_category = next(cat for cat in critical_keyword_categories_found if cat in NO_GO_CATEGORIES and cat not in final_decision_categories)
+                 result_status, reason_message = "Denied", f"Denied based on keyword check of input (found term related to '{missed_category}')."
+
+            # Rule 5: Main Policy Check (Dates, Multi-offense count)
+            # This runs if no specific "No Go" category was found
             else:
-                # Rule 4: Main Policy Check (Categories + Dates)
-                is_approved, policy_reason = check_policy_violation(
+                is_approved_by_policy, policy_reason = check_policy_violation(
                     final_decision_categories, 
                     all_felony_dates_str_list, 
                     release_date_input
                 )
 
-                # Rule 5: Critical Keyword Safety Net
-                # If policy check *approved* it, but we found a critical keyword...
-                if is_approved and is_critical_keyword_present:
-                     is_approved = False
-                     # Find the first critical category that wasn't already caught
-                     missed_category = next(cat for cat in critical_keyword_categories_found if cat in NO_GO_CATEGORIES and cat not in final_decision_categories)
-                     policy_reason = f"Denied based on keyword check of input (found term related to '{missed_category}')."
-                     log_entry_details['keyword_override_reason'] = policy_reason
-
-                result_status, reason_message = ("Approved" if is_approved else "Denied"), policy_reason
+                if not is_approved_by_policy:
+                    # This catches date violations or the "2 or more distinct felony types" rule
+                    result_status, reason_message = "Denied", policy_reason
+                else:
+                    # --- This is the ONLY case where it can be Approved OR Vague ---
+                    # Rule 6: Vague check (from LLM) - ONLY if it's not denied by anything else
+                    if "Clarity Check: Vague" in llm_full_text:
+                         result_status = "Review Required"
+                         reason_message = "Need more information: The specific nature of the underlying felony could not be determined from the description provided."
+                    else:
+                        # Rule 7: All checks passed!
+                        result_status, reason_message = "Approved", policy_reason # policy_reason will be "Approved: No policy violations..."
 
         # --- 7. Log Final Decision ---
         log_entry_details['final_result'] = result_status
@@ -846,37 +858,60 @@ def check_felony_api():
         final_decision_categories = temp_final_categories
         log_entry_details['final_decision_categories'] = final_decision_categories
 
-        # --- 6. Final Decision Logic ---
+        # --- 6. Final Decision Logic (RE-ORDERED) ---
         description_mentions_dismissal = text_mentions_dismissal(felony_input)
         log_entry_details['mentions_dismissal'] = description_mentions_dismissal
+
         is_no_go_offense_present = any(cat in NO_GO_CATEGORIES for cat in final_decision_categories)
+
         critical_keyword_categories_found = check_input_for_critical_keywords(felony_input)
         log_entry_details['critical_keywords_found'] = critical_keyword_categories_found
+
         is_critical_keyword_present = any(
             cat in NO_GO_CATEGORIES and cat not in final_decision_categories 
             for cat in critical_keyword_categories_found
         )
 
-        if "Clarity Check: Vague" in llm_full_text:
-             result_status = "Review Required"
-             reason_message = "Need more information: The specific nature of the underlying felony could not be determined from the description provided."
-        elif (is_no_go_offense_present or is_critical_keyword_present) and description_mentions_dismissal:
+        # Rule 1: Pending Dismissal check (This overrides a denial)
+        if (is_no_go_offense_present or is_critical_keyword_present) and description_mentions_dismissal:
             result_status = "Pending Proof"
             reason_message = "Denied until dropped/dismissed: A disqualifying offense was mentioned but may have been dropped or dismissed. Manual verification of court records is required."
+
+        # Rule 2: LLM Error check
         elif error_msg_from_llm or "Error" in final_decision_categories:
             result_status, reason_message = "Error", error_msg_from_llm or "LLM failed to categorize or an error occurred."
+
+        # Rule 3: Check for "No Go" categories (from LLM or overrides)
+        elif is_no_go_offense_present:
+             denied_category = next(cat for cat in final_decision_categories if cat in NO_GO_CATEGORIES)
+             result_status, reason_message = "Denied", f"Denied based on LLM category: '{denied_category}'"
+
+        # Rule 4: Critical Keyword Safety Net (if LLM missed it)
+        elif is_critical_keyword_present:
+             missed_category = next(cat for cat in critical_keyword_categories_found if cat in NO_GO_CATEGORIES and cat not in final_decision_categories)
+             result_status, reason_message = "Denied", f"Denied based on keyword check of input (found term related to '{missed_category}')."
+
+        # Rule 5: Main Policy Check (Dates, Multi-offense count)
+        # This runs if no specific "No Go" category was found
         else:
-            is_approved, policy_reason = check_policy_violation(
+            is_approved_by_policy, policy_reason = check_policy_violation(
                 final_decision_categories, 
                 all_felony_dates_str_list, 
                 release_date_input
             )
-            if is_approved and is_critical_keyword_present:
-                 is_approved = False
-                 missed_category = next(cat for cat in critical_keyword_categories_found if cat in NO_GO_CATEGORIES and cat not in final_decision_categories)
-                 policy_reason = f"Denied based on keyword check of input (found term related to '{missed_category}')."
-                 log_entry_details['keyword_override_reason'] = policy_reason
-            result_status, reason_message = ("Approved" if is_approved else "Denied"), policy_reason
+
+            if not is_approved_by_policy:
+                # This catches date violations or the "2 or more distinct felony types" rule
+                result_status, reason_message = "Denied", policy_reason
+            else:
+                # --- This is the ONLY case where it can be Approved OR Vague ---
+                # Rule 6: Vague check (from LLM) - ONLY if it's not denied by anything else
+                if "Clarity Check: Vague" in llm_full_text:
+                     result_status = "Review Required"
+                     reason_message = "Need more information: The specific nature of the underlying felony could not be determined from the description provided."
+                else:
+                    # Rule 7: All checks passed!
+                    result_status, reason_message = "Approved", policy_reason # policy_reason will be "Approved: No policy violations..."
 
     # --- 7. Log Final Decision & Respond ---
     log_entry_details['final_result'] = result_status
@@ -920,4 +955,5 @@ if __name__ == '__main__':
     # Set debug=False for production, True for local development
     # Render sets its own environment, so debug=True here is fine for testing.
     app.run(debug=True, host='0.0.0.0', port=port)
+"
 
